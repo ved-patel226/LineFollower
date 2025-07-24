@@ -1,97 +1,123 @@
-from machine import Pin, PWM
-import time 
+from machine import Pin
+import time
+from motors import turn_at_angle, stop
+import socket
+import network
 
-In1=Pin(6,Pin.OUT) 
-In2=Pin(7,Pin.OUT)  
-EN_A=PWM(Pin(8))  
 
-In3=Pin(4,Pin.OUT)  
-In4=Pin(3,Pin.OUT)  
-EN_B=PWM(Pin(2))
-
-EN_A.freq(1000)
-EN_B.freq(1000)
-
-EN_A.duty_u16(65535)  # Full speed initially
-EN_B.duty_u16(65535)  # Full speed initially
-
-def set_motor_speed(speed_percent):
-    """Set motor speed as percentage (0-100)"""
-    if speed_percent < 0:
-        speed_percent = 0
-    elif speed_percent > 100:
-        speed_percent = 100
-    
-    # Convert percentage to duty cycle (0-65535)
-    duty_value = int((speed_percent / 100) * 65535)
-    EN_A.duty_u16(duty_value)
-    EN_B.duty_u16(duty_value)
-
-def forward(speed=100):
-    """Move forward at specified speed (0-100%)"""
-    set_motor_speed(speed)
-    In1.high()
-    In2.low()
-    In3.high()
-    In4.low()
-    
-def backward(speed=100):
-    """Move backward at specified speed (0-100%)"""
-    set_motor_speed(speed)
-    In1.low()
-    In2.high()
-    In3.low()
-    In4.high()
-
-def turn_left(speed=100):
-    """Turn left by rotating motors in opposite directions"""
-    set_motor_speed(speed)
-    In1.low()   # Motor A backward
-    In2.high()
-    In3.high()  # Motor B forward
-    In4.low()
-
-def turn_right(speed=100):
-    """Turn right by rotating motors in opposite directions"""
-    set_motor_speed(speed)
-    In1.high()  # Motor A forward
-    In2.low()
-    In3.low()   # Motor B backward
-    In4.high()
-    
-def stop():
-    """Stop all motors"""
-    In1.low()
-    In2.low()
-    In3.low()
-    In4.low()
-    # Optionally set speed to 0
-    set_motor_speed(0)
-    
-    
-def main():
+def start_web_server():
     try:
-        # Gradually increase speed forward from 0% to 100%
-        print("Linear forward acceleration 0% to 100%")
-        for speed in range(0, 101, 1):
-            forward(speed)
-            print(f"Forward at {speed}% speed")
-            time.sleep(0.1)
-        stop()
-        time.sleep(1)
+        addr = socket.getaddrinfo("0.0.0.0", 80)[0][-1]
+        s = socket.socket()
+        s.bind(addr)
+        s.listen(1)
+        wlan = network.WLAN(network.STA_IF)
+        wlan.active(True)
+        ip = wlan.ifconfig()[0]
+        print(f"Web server running on http://{ip}:80/")
 
-        # Gradually decrease speed backward from 100% to 0%
-        print("Linear backward deceleration 100% to 0%")
-        for speed in range(100, -1, -5):
-            backward(speed)
-            print(f"Backward at {speed}% speed")
-            time.sleep(0.1)
+        while True:
+            cl, addr = s.accept()
+            cl_file = cl.makefile("rwb", 0)
+            request = cl_file.readline()
+            response = """\
+    HTTP/1.0 200 OK
+
+    <html>
+    <head><title>Hello</title></head>
+    <body><h1>Hello World</h1></body>
+    </html>
+    """
+            cl.send(response)
+            cl.close()
+    except Exception as e:
+        print(f"Error starting web server: {e}")
         stop()
-        time.sleep(1)
-            
+
+
+# Uncomment below to start the web server
+start_web_server()
+# Define sensor pins
+L = Pin(18, Pin.IN)  # Left sensor
+M = Pin(19, Pin.IN)  # Middle sensor
+R = Pin(20, Pin.IN)  # Right sensor
+
+# Line following parameters
+BASE_SPEED = 80  # Base speed for motors (0-100%)
+TURN_SPEED = 70  # Speed when turning
+SEARCH_SPEED = 60  # Speed when searching for line
+
+
+def read_sensors():
+    """Read all three sensors and return as tuple"""
+    return (L.value(), M.value(), R.value())
+
+
+def line_follow():
+    """Main line following algorithm using differential steering"""
+    left, middle, right = read_sensors()
+
+    # Line following logic based on sensor combinations
+    # Assuming 0 = line detected, 1 = no line (adjust if opposite)
+
+    if middle == 0:  # Line under middle sensor
+        if left == 0 and right == 0:
+            # All sensors on line - move straight
+            turn_at_angle(90, BASE_SPEED)  # Straight ahead
+            return "STRAIGHT - All on line"
+        elif left == 0:
+            # Left and middle on line - slight right turn
+            turn_at_angle(115, TURN_SPEED)  # Slight right
+            return "SLIGHT RIGHT"
+        elif right == 0:
+            # Right and middle on line - slight left turn
+            turn_at_angle(65, TURN_SPEED)  # Slight left
+            return "SLIGHT LEFT"
+        else:
+            turn_at_angle(90, BASE_SPEED)  # Straight ahead
+            return "STRAIGHT - Middle only"
+
+    elif left == 0:  # Only left sensor on line
+        # Sharp right turn to get back on line
+        turn_at_angle(180, TURN_SPEED)  # Turn right
+        return "SHARP RIGHT"
+
+    elif right == 0:  # Only right sensor on line
+        # Sharp left turn to get back on line
+        turn_at_angle(0, TURN_SPEED)  # Turn left
+        return "SHARP LEFT"
+
+    else:  # No sensors on line - search pattern
+        # Move forward slowly to find line
+        turn_at_angle(90, SEARCH_SPEED)  # Search forward
+        return "SEARCHING"
+
+
+def main():
+    """Main line following program"""
+    print("Starting line following robot...")
+    print("Sensor layout: L=Left, M=Middle, R=Right")
+    print("Press Ctrl+C to stop")
+
+    try:
+        while True:
+            # Read sensors
+            left, middle, right = read_sensors()
+
+            # Execute line following algorithm
+            action = line_follow()
+
+            # Print status (optional - remove for better performance)
+            print(f"L:{left} M:{middle} R:{right} -> {action}")
+
+            # Small delay to prevent overwhelming the system
+            time.sleep(0.05)  # 50ms delay
+
     except KeyboardInterrupt:
         stop()
-        print("Program stopped by user.")
+        print("\nProgram stopped by user.")
+        print("Robot stopped.")
+
 
 if __name__ == "__main__":
     main()
